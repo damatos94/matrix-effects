@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Matrix Cipher · 6 блоков по 10 столбцов</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000500;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            background: #000500;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="matrixCanvas"></canvas>
+    <script>
+    (function() {
+        // === КОНФИГУРАЦИЯ ===
+        const FONT_SIZE = 20;
+        const BLOCK_SIZE = 10;            // Делим на блоки по 10 столбцов
+        const NUM_BLOCKS = 6;             // 60 / 10 = 6 блоков
+        const COLS = BLOCK_SIZE * NUM_BLOCKS; // 60 всего
+        const ROWS = 30;
+        const KEY_ROW = 0;
+        
+        // Порядок заполнения позиций 1-10 → 0-индекс: [0,5,2,3,4,7,9,8,6,1]
+        // Это соответствует: 1;6;3;4;5;8;10;9;7;2
+        const FILL_ORDER = [0, 5, 2, 3, 4, 7, 9, 8, 6, 1];
+        
+        // Параметры анимации
+        const UPDATE_PROB = 0.12;
+        const WAVE_BASE_SPEED = 0.05;
+        const FLICKER_FREQ = 0.004;
+        const FLICKER_MIN_BRIGHT = 0.65;
+        const FLICKER_MAX_BRIGHT = 1.0;
+        const WAVE_BOOST = 1.5;
+
+        // === СОСТОЯНИЕ ===
+        let digits = [], active = [], fixedTime = [], keyFixed = [];
+        let wavePos = [], waveSpeed = [], flickerOffset = [];
+        let frozen = false, fillIdx = 0, lastTs = 0;
+
+        const canvas = document.getElementById('matrixCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // === ИНИЦИАЛИЗАЦИЯ ===
+        function init() {
+            digits = Array.from({length: ROWS}, () => Array(COLS).fill('0'));
+            active = Array.from({length: ROWS}, () => Array(COLS).fill(true));
+            fixedTime = Array(BLOCK_SIZE).fill(null);      // 10 ключевых позиций
+            keyFixed = Array(BLOCK_SIZE).fill(false);
+            wavePos = Array(COLS).fill(-1);
+            waveSpeed = Array.from({length: COLS}, () => 
+                WAVE_BASE_SPEED + Math.random() * 0.04);
+            flickerOffset = Array.from({length: COLS}, () => Math.random() * 1000);
+            frozen = false; 
+            fillIdx = 0;
+
+            for (let r = 0; r < ROWS; r++)
+                for (let c = 0; c < COLS; c++)
+                    digits[r][c] = String(Math.floor(Math.random() * 10));
+
+            // Верхняя строка (ключи) изначально скрыта
+            for (let c = 0; c < COLS; c++) 
+                active[KEY_ROW][c] = false;
+            
+            resize();
+            requestAnimationFrame(tick);
+            fillKeys();
+        }
+
+        function resize() {
+            canvas.width = COLS * FONT_SIZE;
+            canvas.height = ROWS * FONT_SIZE;
+            ctx.font = `bold ${FONT_SIZE}px monospace`;
+            ctx.textBaseline = 'top';
+            ctx.imageSmoothingEnabled = false;
+        }
+
+        // === ЦВЕТ ЯЧЕЙКИ ===
+        function getColor(c, r, now, isKeyPos, fixedTs) {
+            // 🔹 КЛЮЧЕВЫЕ ЯЧЕЙКИ — БЕЗ МЕРЦАНИЯ, СТАБИЛЬНЫЕ
+            if (isKeyPos && fixedTs !== null) {
+                const elapsed = (now - fixedTs) / 1100;
+                if (elapsed < 1) {
+                    const intensity = 1 - elapsed;
+                    const rVal = Math.min(255, 240 + 15 * intensity);
+                    const gVal = 255;
+                    const bVal = Math.min(255, 240 + 15 * intensity);
+                    return `rgb(${rVal},${gVal},${bVal})`;
+                }
+                return '#9f9'; // Стабильный яркий зелёный после фиксации
+            }
+
+            // 🔹 ОБЫЧНЫЕ ЯЧЕЙКИ — мерцание + волна
+            const flick = 0.5 + 0.5 * Math.sin(now * FLICKER_FREQ + flickerOffset[c] + c * 0.25);
+            const baseBright = FLICKER_MIN_BRIGHT + flick * (FLICKER_MAX_BRIGHT - FLICKER_MIN_BRIGHT);
+
+            let waveMult = 1;
+            if (wavePos[c] >= 0) {
+                const waveRow = wavePos[c] * ROWS;
+                const dist = Math.abs(r - waveRow);
+                if (dist < 3) {
+                    waveMult = 1 + (WAVE_BOOST - 1) * (1 - dist / 3);
+                }
+            }
+
+            const brightness = baseBright * waveMult;
+            const green = Math.min(255, Math.floor((145 + Math.random() * 110) * brightness));
+            return `rgb(0,${green},0)`;
+        }
+
+        // === ОТРИСОВКА ===
+        function draw(now) {
+            ctx.fillStyle = '#000500';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    if (!active[r][c]) continue;
+                    
+                    const posInBlock = c % BLOCK_SIZE;  // Позиция 0-9 внутри блока
+                    const isKeyCell = (r === KEY_ROW && c < BLOCK_SIZE);
+                    const x = c * FONT_SIZE;
+                    const y = r * FONT_SIZE;
+
+                    const fixedTs = (isKeyCell && keyFixed[posInBlock]) ? fixedTime[posInBlock] : null;
+                    
+                    ctx.shadowBlur = (isKeyCell && fixedTs) ? 14 : 3;
+                    ctx.shadowColor = '#0f0';
+                    ctx.fillStyle = getColor(c, r, now, isKeyCell, fixedTs);
+                    ctx.fillText(digits[r][c], x, y);
+                }
+            }
+            ctx.shadowBlur = 0;
+        }
+
+        // === ОБНОВЛЕНИЕ ЛОГИКИ ===
+        function update(dt, now) {
+            if (frozen) return;
+            
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    if (!active[r][c]) continue;
+                    
+                    const posInBlock = c % BLOCK_SIZE;
+                    // Пропускаем зафиксированные ключевые позиции в первом блоке
+                    if (r === KEY_ROW && c < BLOCK_SIZE && keyFixed[posInBlock]) continue;
+                    
+                    if (Math.random() < UPDATE_PROB * dt) {
+                        digits[r][c] = String(Math.floor(Math.random() * 10));
+                    }
+                }
+            }
+
+            // Движение волн в каждой колонке
+            for (let c = 0; c < COLS; c++) {
+                if (wavePos[c] >= 0) {
+                    wavePos[c] += waveSpeed[c] * dt;
+                    if (wavePos[c] > 1.3) wavePos[c] = -1;
+                }
+                if (wavePos[c] < 0 && Math.random() < 0.0015 * dt) {
+                    wavePos[c] = -0.25;
+                }
+            }
+        }
+
+        function tick(now) {
+            const dt = (now - lastTs) / 16.67 || 1;
+            lastTs = now;
+            update(dt, now);
+            draw(now);
+            requestAnimationFrame(tick);
+        }
+
+        // === ЗАПОЛНЕНИЕ 10 КЛЮЧЕЙ ПО ПОРЯДКУ ===
+        async function fillKeys() {
+            while (fillIdx < FILL_ORDER.length) {
+                const pos = FILL_ORDER[fillIdx++]; // Позиция 0-9 внутри блока
+                await new Promise(res => setTimeout(res, 900 + Math.random() * 3800));
+                if (keyFixed[pos]) continue;
+
+                // 🔹 Ключ ТОЛЬКО в первом блоке, в позиции `pos` (колонка = pos)
+                const keyCol = pos;
+                
+                digits[KEY_ROW][keyCol] = String(Math.floor(Math.random() * 10));
+                fixedTime[pos] = performance.now();
+                keyFixed[pos] = true;
+                active[KEY_ROW][keyCol] = true;
+
+                // 🔹 При фиксации позиции `pos`: отключаем строки 1-29 во ВСЕХ блоках включая первый
+                for (let block = 0; block < NUM_BLOCKS; block++) {
+                    const otherCol = block * BLOCK_SIZE + pos;
+                    for (let r = 1; r < ROWS; r++) {
+                        active[r][otherCol] = false;
+                    }
+                }
+
+                // Запускаем волну в колонке с ключом
+                wavePos[keyCol] = -0.2;
+                
+                if (keyFixed.every(x => x)) {
+                    frozen = true;
+                    break;
+                }
+            }
+        }
+
+        // === УПРАВЛЕНИЕ КУРСОРОМ ===
+        let cursorTimeout;
+        canvas.addEventListener('mousemove', () => {
+            clearTimeout(cursorTimeout);
+            canvas.style.cursor = 'default';
+            cursorTimeout = setTimeout(() => {
+                canvas.style.cursor = 'none';
+            }, 2500);
+        });
+        canvas.addEventListener('mouseleave', () => {
+            clearTimeout(cursorTimeout);
+            canvas.style.cursor = 'default';
+        });
+
+        window.addEventListener('resize', resize);
+        init();
+    })();
+    </script>
+</body>
+</html>

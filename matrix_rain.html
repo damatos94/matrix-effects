@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Matrix Rain Ultimate</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#000500;overflow:hidden;height:100vh;width:100vw;}
+canvas{display:block;width:100%;height:100%;background:#000500;filter:drop-shadow(0 0 5px #0f0) blur(.5px);}
+</style>
+</head>
+<body>
+<canvas id="matrixCanvas"></canvas>
+
+<script>
+(function(){
+
+const FONT_SIZE = 20
+const TRAIL_LENGTH = 30
+const DROP_SPAWN_PROB = 0.12
+
+const CHAR_UPDATE_PROB = 0.055
+const GLITCH_PROB = 0.018          // ← новый глитч-эффект
+const RAIN_TARGET_PROB = 0.38
+const DISSOLVE_PROB = 0.24
+
+const MIN_SPEED = 0.105
+const MAX_SPEED = 0.455
+
+const EXPAND_THRESHOLD = 0.8
+const WORD_DISPLAY_TIME = 180
+const WORD_PAUSE_TIME = 180
+
+const WORDS = ["NEO","TRINITY","THE MATRIX HAS YOU","WAKE UP","MATRIX","REALITY","REALITY IS AN ILLUSION","SYSTEM","ERROR","FOLLOW THE WHITE RABBIT"]
+
+const CHARS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜｦﾝABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*()_+{}[]:;<>?,./"
+const CHAR_POOL = CHARS.split('')
+
+const canvas = document.getElementById("matrixCanvas")
+const ctx = canvas.getContext("2d")
+
+let width, height, columns, rows
+let symbols = []
+let drops = []
+let active = []
+let wordPositions = [], wordColumns = new Set()
+let wordFixed = []                 // ← 2D-массив вместо строковых ключей
+let autoWordMode = false
+let initialCenterColumn = -1
+let initialDropEnded = false
+
+const STATE_IDLE=0, STATE_BUILDING=1, STATE_DISPLAY=2, STATE_DISSOLVE=3
+let wordState = STATE_IDLE
+let displayTimer = 0, pauseTimer = 0, wordRainBoost = false
+let expansionStarted = false, expansionComplete = false
+let lastTime = performance.now()
+let isTabVisible = true
+
+let cursorTimeout = null
+function hideCursor(){ canvas.style.cursor = 'none' }
+function resetCursorTimer(){
+    clearTimeout(cursorTimeout)
+    canvas.style.cursor = 'default'
+    cursorTimeout = setTimeout(hideCursor, 2500)
+}
+
+const rand = (a,b) => a + Math.random()*(b-a)
+const getRandomWord = () => WORDS[Math.floor(Math.random()*WORDS.length)]
+const getRandomCharFast = () => CHAR_POOL[(Math.random() * CHAR_POOL.length) | 0]
+
+function hasFastStreamCovering(col, row){
+    if(!active[col]) return false
+    for(let drop of drops[col]){
+        if(!drop.isFast || drop.isInitialCenterDrop) continue
+        const head = drop.y
+        const tail = head - TRAIL_LENGTH
+        if(tail <= row && head >= row - 1) return true
+    }
+    return false
+}
+
+function initMatrix(){
+    width = canvas.clientWidth
+    height = canvas.clientHeight
+    canvas.width = width
+    canvas.height = height
+
+    columns = Math.floor(width / FONT_SIZE)
+    rows = Math.floor(height / FONT_SIZE)
+
+    symbols = []; drops = []; active = []; wordFixed = []
+    wordColumns.clear(); wordPositions = []
+    expansionStarted = false; expansionComplete = false
+    wordRainBoost = false; wordState = STATE_IDLE
+    initialDropEnded = false
+
+    for(let c=0; c<columns; c++){
+        symbols[c] = []
+        drops[c] = []
+        wordFixed[c] = new Array(rows).fill(false)
+        for(let r=0; r<rows; r++) symbols[c][r] = getRandomCharFast()
+        active[c] = false
+    }
+
+    const center = Math.floor(columns/2)
+    initialCenterColumn = center
+    active[center] = true
+
+    const initialDrop = { y: -rows * 0.72, speed: rand(MIN_SPEED, MAX_SPEED), isFast: false, isInitialCenterDrop: true }
+    drops[center].push(initialDrop)
+
+    ctx.font = "bold " + FONT_SIZE + "px monospace"
+    ctx.textBaseline = "top"
+}
+
+function startNewDrop(col){
+    if(col === initialCenterColumn && !initialDropEnded) return
+
+    const newDrop = {
+        y: -(TRAIL_LENGTH + Math.random()*TRAIL_LENGTH*1.5),
+        speed: rand(MIN_SPEED, MAX_SPEED),
+        isFast: false,
+        isInitialCenterDrop: false
+    }
+
+    if(wordRainBoost && wordColumns.has(col)){
+        newDrop.speed = MAX_SPEED
+        newDrop.isFast = true
+    }
+
+    drops[col].push(newDrop)
+    active[col] = true
+}
+
+function activateNextColumns(){
+    if(expansionComplete) return
+    const center = Math.floor(columns/2)
+    for(let o=1; o<columns; o++){
+        let l = center-o, r = center+o
+        if(l>=0 && !active[l]){ active[l]=true; startNewDrop(l); return }
+        if(r<columns && !active[r]){ active[r]=true; startNewDrop(r); return }
+    }
+    expansionComplete = true
+}
+
+function startWordAnimation(){
+    if(wordState !== STATE_IDLE) return
+
+    const word = getRandomWord()
+    wordColumns.clear()
+    wordPositions = []
+
+    const center = Math.floor(columns/2)
+    let start = Math.max(0, center - Math.floor(word.length/2))
+    if(start + word.length > columns) start = columns - word.length
+
+    const row = Math.floor(rows * 0.38)
+
+    for(let i=0; i<word.length; i++){
+        const ch = word[i]
+        if(ch === ' ') continue
+        const col = start + i
+        const pos = {col, row, target: ch, fixed: false}
+        wordPositions.push(pos)
+        wordColumns.add(col)
+    }
+
+    wordRainBoost = true
+    wordState = STATE_BUILDING
+
+    wordColumns.forEach(col => {
+        if(active[col]) startNewDrop(col)
+    })
+}
+
+function update(dt){
+    for(let c=0; c<columns; c++){
+        if(!active[c]) continue
+
+        for(let i = drops[c].length - 1; i >= 0; i--){
+            const drop = drops[c][i]
+            drop.y += drop.speed * dt
+
+            if(drop.isInitialCenterDrop && drop.y - TRAIL_LENGTH > rows + 10){
+                initialDropEnded = true
+            }
+
+            if(drop.y - TRAIL_LENGTH > rows + 10){
+                drops[c].splice(i, 1)
+            }
+        }
+
+        if(active[c] && drops[c].length < 4 && Math.random() < DROP_SPAWN_PROB){
+            startNewDrop(c)
+        }
+    }
+
+    if(initialDropEnded && !expansionStarted){
+        expansionStarted = true
+        activateNextColumns()
+    }
+    if(expansionStarted && !expansionComplete) activateNextColumns()
+
+    /* ========== ОБНОВЛЕНИЕ СИМВОЛОВ + ГЛИТЧ ========== */
+    for(let c=0; c<columns; c++){
+        if(!active[c]) continue
+        for(let drop of drops[c]){
+            const startR = Math.max(0, Math.floor(drop.y - TRAIL_LENGTH - 2))
+            const endR = Math.min(rows-1, Math.floor(drop.y + 2))
+
+            for(let r = startR; r <= endR; r++){
+                if(wordFixed[c][r]) continue
+
+                if(Math.random() < CHAR_UPDATE_PROB){
+                    symbols[c][r] = getRandomCharFast()
+                }
+
+                /* ГЛИТЧ: меняем и сразу возвращаем */
+                if(Math.random() < GLITCH_PROB){
+                    const old = symbols[c][r]
+                    symbols[c][r] = getRandomCharFast()
+                    if(Math.random() < 0.65) symbols[c][r] = old   // обратно в 65% случаев
+                }
+            }
+        }
+    }
+
+    /* ========== WORD LOGIC ========== */
+    if(wordState === STATE_BUILDING){
+        let allFixed = true
+        for(const pos of wordPositions){
+            if(pos.fixed) continue
+            if(hasFastStreamCovering(pos.col, pos.row) && Math.random() < RAIN_TARGET_PROB){
+                symbols[pos.col][pos.row] = pos.target
+                wordFixed[pos.col][pos.row] = true
+                pos.fixed = true
+            } else {
+                allFixed = false
+            }
+        }
+        if(allFixed){
+            wordState = STATE_DISPLAY
+            displayTimer = WORD_DISPLAY_TIME
+        }
+    }
+    else if(wordState === STATE_DISPLAY){
+        if(--displayTimer <= 0) wordState = STATE_DISSOLVE
+    }
+    else if(wordState === STATE_DISSOLVE){
+        let remain = false
+        for(const pos of wordPositions){
+            if(!pos.fixed) continue
+            if(hasFastStreamCovering(pos.col, pos.row) && Math.random() < DISSOLVE_PROB){
+                wordFixed[pos.col][pos.row] = false
+                pos.fixed = false
+            } else {
+                remain = true
+            }
+        }
+        if(!remain){
+            wordState = STATE_IDLE
+            wordRainBoost = false
+            if(autoWordMode) pauseTimer = WORD_PAUSE_TIME
+        }
+    }
+
+    if(autoWordMode && wordState === STATE_IDLE){
+        if(--pauseTimer <= 0) startWordAnimation()
+    }
+}
+
+function draw(){
+    ctx.fillStyle = "rgba(0,5,0,0.27)"
+    ctx.fillRect(0,0,width,height)
+
+    for(let c=0; c<columns; c++){
+        if(drops[c].length === 0) continue
+        for(let drop of drops[c]){
+            const head = drop.y
+            const startR = Math.max(0, Math.floor(head - TRAIL_LENGTH - 2))
+            const endR = Math.min(rows-1, Math.floor(head + 2))
+
+            for(let r=startR; r<=endR; r++){
+                const dist = head - r
+                if(dist > TRAIL_LENGTH + 8 || dist < -3) continue
+                if(wordFixed[c][r]) continue
+
+                let alpha = 1 - (dist / TRAIL_LENGTH)
+                alpha = Math.pow(Math.max(0,alpha), 0.73)
+                const g = 195 + Math.floor(60 * (1 - dist/TRAIL_LENGTH))
+
+                ctx.fillStyle = `rgba(0,${g},65,${alpha})`
+
+                if(dist < 1.7){
+                    ctx.fillStyle = "rgba(210,255,225,0.98)"
+                    ctx.shadowBlur = 10
+                    ctx.shadowColor = "#0f0"
+                } else {
+                    ctx.shadowBlur = 0
+                }
+
+                ctx.fillText(symbols[c][r], c*FONT_SIZE, r*FONT_SIZE)
+            }
+        }
+    }
+    ctx.shadowBlur = 0
+
+    for(const pos of wordPositions){
+        if(!pos.fixed) continue
+        ctx.fillStyle = "rgba(220,255,230,1)"
+        ctx.shadowBlur = 13
+        ctx.shadowColor = "#0f0"
+        ctx.fillText(pos.target, pos.col*FONT_SIZE, pos.row*FONT_SIZE)
+    }
+    ctx.shadowBlur = 0
+}
+
+/* ========== КУРСОР И ВКЛАДКИ ========== */
+canvas.addEventListener('mousemove', resetCursorTimer)
+canvas.addEventListener('mouseleave', () => { clearTimeout(cursorTimeout); canvas.style.cursor = 'default' })
+
+document.addEventListener('visibilitychange', () => {
+    isTabVisible = document.visibilityState === 'visible'
+    if(isTabVisible) lastTime = performance.now()
+})
+
+function frame(){
+    const now = performance.now()
+    let dt = (now - lastTime) / 16.666
+    if(dt > 5) dt = 1
+    lastTime = now
+
+    if(isTabVisible){
+        update(dt)
+        draw()
+    }
+    requestAnimationFrame(frame)
+}
+
+window.addEventListener("resize", initMatrix)
+canvas.addEventListener("click", () => {
+    autoWordMode = !autoWordMode
+    if(autoWordMode && wordState === STATE_IDLE) startWordAnimation()
+})
+
+initMatrix()
+resetCursorTimer()
+requestAnimationFrame(frame)
+
+})()
+</script>
+</body>
+</html>
