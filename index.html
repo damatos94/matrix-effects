@@ -14,7 +14,7 @@
         #terminal{
             padding:40px;
             font-size:22px;
-            line-height:1.6;
+            line-height:1.7;
         }
         .cursor{
             display:inline-block;
@@ -27,22 +27,28 @@
             25%,75%{opacity:0}
         }
         .menu {
-            margin-top: 30px;
-            display: none;
+            margin-top: 35px;
         }
         .menu a {
             display: block;
             color: #00ff41;
             text-decoration: none;
-            font-size: 24px;
-            margin: 15px 0;
-            padding: 10px 20px;
-            border: 1px solid #00ff41;
-            width: fit-content;
+            font-size: 27px;
+            margin: 22px 0;
+            padding: 6px 0;
+            transition: all 0.3s ease;
+            text-shadow: 
+                0 0 8px #00ff41,
+                0 0 20px #00ff41,
+                0 0 35px #00ff41;
         }
         .menu a:hover {
-            background: #00ff41;
-            color: #000;
+            color: #00ff80;
+            text-shadow: 
+                0 0 15px #00ff41,
+                0 0 30px #00ff41,
+                0 0 50px #00ff41,
+                0 0 80px #00ff41;
         }
     </style>
 </head>
@@ -76,7 +82,6 @@ function type(){
             setTimeout(type, 400);
         }
     } else {
-        // Показываем меню выбора
         const menu = document.createElement("div");
         menu.className = "menu";
         menu.innerHTML = `
@@ -84,7 +89,6 @@ function type(){
             <a href="matrix_chipher.html">→ Enter the Matrix Cipher</a>
         `;
         terminal.appendChild(menu);
-        menu.style.display = "block";
     }
 }
 type();
