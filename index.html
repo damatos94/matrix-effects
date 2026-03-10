@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Matrix Terminal</title>
+
+<style>
+body{
+    background:#000;
+    color:#00ff41;
+    font-family: monospace;
+    margin:0;
+    overflow:hidden;
+}
+
+#terminal{
+    padding:40px;
+    font-size:20px;
+}
+
+.cursor{
+    display:inline-block;
+    width:10px;
+    background:#00ff41;
+    animation:blink 1s infinite;
+}
+
+@keyframes blink{
+    0%,50%,100%{opacity:1}
+    25%,75%{opacity:0}
+}
+</style>
+</head>
+
+<body>
+
+<div id="terminal"></div>
+
+<script>
+
+const text = [
+"Connecting to matrix...",
+"Decrypting reality...",
+"Access granted.",
+"",
+"Launching system..."
+];
+
+let line = 0;
+let char = 0;
+const speed = 40;
+
+function type(){
+    const terminal = document.getElementById("terminal");
+
+    if(line < text.length){
+        if(char < text[line].length){
+
+            terminal.innerHTML += text[line][char];
+            char++;
+
+            setTimeout(type,speed);
+
+        }else{
+
+            terminal.innerHTML += "<br>";
+            line++;
+            char=0;
+
+            setTimeout(type,300);
+        }
+
+    }else{
+
+        setTimeout(()=>{
+            window.location.href="matrix-rain.html";
+        },1200);
+
+    }
+}
+
+type();
+
+</script>
+
+</body>
+</html>
