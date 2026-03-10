@@ -1,87 +1,93 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Matrix Terminal</title>
-
-<style>
-body{
-    background:#000;
-    color:#00ff41;
-    font-family: monospace;
-    margin:0;
-    overflow:hidden;
-}
-
-#terminal{
-    padding:40px;
-    font-size:20px;
-}
-
-.cursor{
-    display:inline-block;
-    width:10px;
-    background:#00ff41;
-    animation:blink 1s infinite;
-}
-
-@keyframes blink{
-    0%,50%,100%{opacity:1}
-    25%,75%{opacity:0}
-}
-</style>
+    <meta charset="UTF-8">
+    <title>Matrix Terminal</title>
+    <style>
+        body{
+            background:#000;
+            color:#00ff41;
+            font-family: monospace;
+            margin:0;
+            overflow:hidden;
+        }
+        #terminal{
+            padding:40px;
+            font-size:22px;
+            line-height:1.6;
+        }
+        .cursor{
+            display:inline-block;
+            width:10px;
+            background:#00ff41;
+            animation:blink 1s infinite;
+        }
+        @keyframes blink{
+            0%,50%,100%{opacity:1}
+            25%,75%{opacity:0}
+        }
+        .menu {
+            margin-top: 30px;
+            display: none;
+        }
+        .menu a {
+            display: block;
+            color: #00ff41;
+            text-decoration: none;
+            font-size: 24px;
+            margin: 15px 0;
+            padding: 10px 20px;
+            border: 1px solid #00ff41;
+            width: fit-content;
+        }
+        .menu a:hover {
+            background: #00ff41;
+            color: #000;
+        }
+    </style>
 </head>
-
 <body>
-
 <div id="terminal"></div>
 
 <script>
-
 const text = [
 "Connecting to matrix...",
 "Decrypting reality...",
 "Access granted.",
 "",
-"Launching system..."
+"Choose your path:"
 ];
-
 let line = 0;
 let char = 0;
 const speed = 40;
 
 function type(){
     const terminal = document.getElementById("terminal");
-
+    
     if(line < text.length){
         if(char < text[line].length){
-
             terminal.innerHTML += text[line][char];
             char++;
-
-            setTimeout(type,speed);
-
-        }else{
-
+            setTimeout(type, speed);
+        } else {
             terminal.innerHTML += "<br>";
             line++;
-            char=0;
-
-            setTimeout(type,300);
+            char = 0;
+            setTimeout(type, 400);
         }
-
-    }else{
-
-        setTimeout(()=>{
-            window.location.href="matrix-rain.html";
-        },1200);
-
+    } else {
+        // Показываем меню выбора
+        const menu = document.createElement("div");
+        menu.className = "menu";
+        menu.innerHTML = `
+            <a href="matrix_rain.html">→ Enter the Matrix Rain</a>
+            <a href="matrix_chipher.html">→ Enter the Matrix Cipher</a>
+        `;
+        terminal.appendChild(menu);
+        menu.style.display = "block";
     }
 }
-
 type();
-
 </script>
-
 </body>
 </html>
