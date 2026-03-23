@@ -27,50 +27,76 @@
     (function() {
         // === КОНФИГУРАЦИЯ ===
         const FONT_SIZE = 20;
-        const BLOCK_SIZE = 10;            // Делим на блоки по 10 столбцов
-        const NUM_BLOCKS = 6;             // 60 / 10 = 6 блоков
-        const COLS = BLOCK_SIZE * NUM_BLOCKS; // 60 всего
+        const BLOCK_SIZE = 10;
+        const NUM_BLOCKS = 6;
+        const COLS = BLOCK_SIZE * NUM_BLOCKS;
         const ROWS = 30;
         const KEY_ROW = 0;
         
-        // Порядок заполнения позиций 1-10 → 0-индекс: [0,5,2,3,4,7,9,8,6,1]
-        // Это соответствует: 1;6;3;4;5;8;10;9;7;2
         const FILL_ORDER = [0, 5, 2, 3, 4, 7, 9, 8, 6, 1];
         
-        // Параметры анимации
         const UPDATE_PROB = 0.12;
         const WAVE_BASE_SPEED = 0.05;
         const FLICKER_FREQ = 0.004;
         const FLICKER_MIN_BRIGHT = 0.65;
         const FLICKER_MAX_BRIGHT = 1.0;
         const WAVE_BOOST = 1.5;
+        
+        // 🔹 НАСТРОЙКИ ТАЙМИНГА 👇
+        const RESTART_DELAY = 10000;        // Общая задержка до перезапуска (мс)
+        const GLITCH_LEAD_TIME = 5000;      // За сколько мс до рестарта начинается мерцание
+        
+        // Параметры глитч-эффекта
+        const GLITCH_BASE_FREQ = 2;         // Базовая частота мерцаний в начале (Гц)
+        const GLITCH_MAX_FREQ = 20;         // Макс. частота к концу (Гц)
+        const GLITCH_BLACKOUT_CHANCE = 0.3; // Шанс полного выключения экрана при срабатывании
+        const GLITCH_STRIP_COUNT = 3;       // Количество случайных полос при частичном выключении
+        
+        // 🔹 ДЛИТЕЛЬНОСТЬ ПРОВАЛОВ (в кадрах @60fps) 👇
+        const GLITCH_MIN_DURATION = 1;      // Мин. длительность провала в начале глитча (кадры)
+        const GLITCH_MAX_DURATION = 10;     // Макс. длительность провала в конце глитча (кадры)
 
         // === СОСТОЯНИЕ ===
         let digits = [], active = [], fixedTime = [], keyFixed = [];
         let wavePos = [], waveSpeed = [], flickerOffset = [];
-        let frozen = false, fillIdx = 0, lastTs = 0;
+        let frozen = false, fillIdx = 0, lastTs = 0, restartTimer = null;
+        
+        // 🔹 СОСТОЯНИЕ ГЛИТЧ-ЭФФЕКТА
+        let restartStartTime = null;
+        let glitchActive = false;
+        let blackoutUntil = 0;              // До какого времени (мс) длится текущий провал
+        let blackoutType = null;            // 'full' или 'strip'
 
         const canvas = document.getElementById('matrixCanvas');
         const ctx = canvas.getContext('2d');
 
         // === ИНИЦИАЛИЗАЦИЯ ===
         function init() {
+            if (restartTimer) {
+                clearTimeout(restartTimer);
+                restartTimer = null;
+            }
+            
             digits = Array.from({length: ROWS}, () => Array(COLS).fill('0'));
             active = Array.from({length: ROWS}, () => Array(COLS).fill(true));
-            fixedTime = Array(BLOCK_SIZE).fill(null);      // 10 ключевых позиций
+            fixedTime = Array(BLOCK_SIZE).fill(null);
             keyFixed = Array(BLOCK_SIZE).fill(false);
             wavePos = Array(COLS).fill(-1);
             waveSpeed = Array.from({length: COLS}, () => 
                 WAVE_BASE_SPEED + Math.random() * 0.04);
             flickerOffset = Array.from({length: COLS}, () => Math.random() * 1000);
+            
             frozen = false; 
             fillIdx = 0;
+            restartStartTime = null;
+            glitchActive = false;
+            blackoutUntil = 0;
+            blackoutType = null;
 
             for (let r = 0; r < ROWS; r++)
                 for (let c = 0; c < COLS; c++)
                     digits[r][c] = String(Math.floor(Math.random() * 10));
 
-            // Верхняя строка (ключи) изначально скрыта
             for (let c = 0; c < COLS; c++) 
                 active[KEY_ROW][c] = false;
             
@@ -89,7 +115,6 @@
 
         // === ЦВЕТ ЯЧЕЙКИ ===
         function getColor(c, r, now, isKeyPos, fixedTs) {
-            // 🔹 КЛЮЧЕВЫЕ ЯЧЕЙКИ — БЕЗ МЕРЦАНИЯ, СТАБИЛЬНЫЕ
             if (isKeyPos && fixedTs !== null) {
                 const elapsed = (now - fixedTs) / 1100;
                 if (elapsed < 1) {
@@ -99,10 +124,18 @@
                     const bVal = Math.min(255, 240 + 15 * intensity);
                     return `rgb(${rVal},${gVal},${bVal})`;
                 }
-                return '#9f9'; // Стабильный яркий зелёный после фиксации
+                return '#9f9';
             }
 
-            // 🔹 ОБЫЧНЫЕ ЯЧЕЙКИ — мерцание + волна
+            // 🔹 ЗАТЕМНЕНИЕ ОБЫЧНЫХ ЯЧЕЕК ВО ВРЕМЯ ГЛИТЧА
+            if (glitchActive && restartStartTime) {
+                const timeToRestart = RESTART_DELAY - (now - restartStartTime);
+                if (timeToRestart <= GLITCH_LEAD_TIME && timeToRestart > 0) {
+                    const fade = 1 - (GLITCH_LEAD_TIME - timeToRestart) / GLITCH_LEAD_TIME;
+                    return `rgba(0,${Math.floor(80 * (1 - fade))},0,${0.3 + fade * 0.4})`;
+                }
+            }
+
             const flick = 0.5 + 0.5 * Math.sin(now * FLICKER_FREQ + flickerOffset[c] + c * 0.25);
             const baseBright = FLICKER_MIN_BRIGHT + flick * (FLICKER_MAX_BRIGHT - FLICKER_MIN_BRIGHT);
 
@@ -120,8 +153,81 @@
             return `rgb(0,${green},0)`;
         }
 
+        // === ГЛИТЧ-ЭФФЕКТ: мерцание и выключения с длительностью ===
+        function applyGlitch(now) {
+            if (!glitchActive || !restartStartTime) return false;
+            
+            const elapsed = now - restartStartTime;
+            const timeToRestart = RESTART_DELAY - elapsed;
+            
+            if (timeToRestart > GLITCH_LEAD_TIME) return false;
+            if (timeToRestart <= 0) return false;
+            
+            // 🔹 ПРОВЕРКА: если уже в провале — не прерываем, просто показываем чёрный
+            if (now < blackoutUntil) {
+                if (blackoutType === 'full') {
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    return true;
+                } else if (blackoutType === 'strip') {
+                    // Рендерим обычный кадр, но поверх — полосы (они уже «нарисованы» при старте)
+                    // Для простоты: просто чёрный экран на время strip-провала тоже
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    return true;
+                }
+            }
+            
+            const glitchProgress = 1 - (timeToRestart / GLITCH_LEAD_TIME);
+            
+            // Частота растёт
+            const baseFreq = GLITCH_BASE_FREQ + glitchProgress * (GLITCH_MAX_FREQ - GLITCH_BASE_FREQ);
+            const instability = Math.sin(elapsed * 0.007) * 0.4 + Math.random() * 0.6;
+            const currentFreq = baseFreq * (0.8 + instability);
+            
+            const triggerChance = currentFreq / 60;
+            
+            if (Math.random() < triggerChance) {
+                // 🔹 РАСЧЁТ ДЛИТЕЛЬНОСТИ ПРОВАЛА (в кадрах)
+                // Интерполяция + случайность ±20%
+                const rawDuration = GLITCH_MIN_DURATION + glitchProgress * (GLITCH_MAX_DURATION - GLITCH_MIN_DURATION);
+                const jitter = 0.8 + Math.random() * 0.4; // 0.8...1.2
+                const durationFrames = Math.floor(rawDuration * jitter);
+                const durationMs = durationFrames * (1000 / 60); // ~16.67 мс на кадр
+                
+                blackoutUntil = now + durationMs;
+                
+                // 🔹 ТИП ПРОВАЛА
+                if (Math.random() < GLITCH_BLACKOUT_CHANCE) {
+                    blackoutType = 'full';
+                } else {
+                    blackoutType = 'strip';
+                    // Рисуем полосы один раз при старте провала
+                    ctx.fillStyle = '#000';
+                    for (let i = 0; i < GLITCH_STRIP_COUNT; i++) {
+                        const x = Math.random() * canvas.width;
+                        const w = Math.random() * 80 + 15;
+                        ctx.fillRect(x, 0, w, canvas.height);
+                    }
+                    return true;
+                }
+                
+                // Для full-провала сразу заливаем чёрным
+                if (blackoutType === 'full') {
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+
         // === ОТРИСОВКА ===
         function draw(now) {
+            const glitched = applyGlitch(now);
+            if (glitched) return;
+            
             ctx.fillStyle = '#000500';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -129,7 +235,7 @@
                 for (let c = 0; c < COLS; c++) {
                     if (!active[r][c]) continue;
                     
-                    const posInBlock = c % BLOCK_SIZE;  // Позиция 0-9 внутри блока
+                    const posInBlock = c % BLOCK_SIZE;
                     const isKeyCell = (r === KEY_ROW && c < BLOCK_SIZE);
                     const x = c * FONT_SIZE;
                     const y = r * FONT_SIZE;
@@ -154,7 +260,6 @@
                     if (!active[r][c]) continue;
                     
                     const posInBlock = c % BLOCK_SIZE;
-                    // Пропускаем зафиксированные ключевые позиции в первом блоке
                     if (r === KEY_ROW && c < BLOCK_SIZE && keyFixed[posInBlock]) continue;
                     
                     if (Math.random() < UPDATE_PROB * dt) {
@@ -163,7 +268,6 @@
                 }
             }
 
-            // Движение волн в каждой колонке
             for (let c = 0; c < COLS; c++) {
                 if (wavePos[c] >= 0) {
                     wavePos[c] += waveSpeed[c] * dt;
@@ -183,14 +287,13 @@
             requestAnimationFrame(tick);
         }
 
-        // === ЗАПОЛНЕНИЕ 10 КЛЮЧЕЙ ПО ПОРЯДКУ ===
+        // === ЗАПОЛНЕНИЕ КЛЮЧЕЙ ===
         async function fillKeys() {
             while (fillIdx < FILL_ORDER.length) {
-                const pos = FILL_ORDER[fillIdx++]; // Позиция 0-9 внутри блока
+                const pos = FILL_ORDER[fillIdx++];
                 await new Promise(res => setTimeout(res, 900 + Math.random() * 3800));
                 if (keyFixed[pos]) continue;
 
-                // 🔹 Ключ ТОЛЬКО в первом блоке, в позиции `pos` (колонка = pos)
                 const keyCol = pos;
                 
                 digits[KEY_ROW][keyCol] = String(Math.floor(Math.random() * 10));
@@ -198,7 +301,6 @@
                 keyFixed[pos] = true;
                 active[KEY_ROW][keyCol] = true;
 
-                // 🔹 При фиксации позиции `pos`: отключаем строки 1-29 во ВСЕХ блоках включая первый
                 for (let block = 0; block < NUM_BLOCKS; block++) {
                     const otherCol = block * BLOCK_SIZE + pos;
                     for (let r = 1; r < ROWS; r++) {
@@ -206,11 +308,19 @@
                     }
                 }
 
-                // Запускаем волну в колонке с ключом
                 wavePos[keyCol] = -0.2;
                 
                 if (keyFixed.every(x => x)) {
                     frozen = true;
+                    
+                    restartStartTime = performance.now();
+                    
+                    restartTimer = setTimeout(() => {
+                        init();
+                    }, RESTART_DELAY);
+                    
+                    glitchActive = true;
+                    
                     break;
                 }
             }
